@@ -32,6 +32,10 @@ class VaultError(RuntimeError):
     pass
 
 
+class Busy(VaultError):
+    """Another gateway process holds the lock; nothing was done."""
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -40,8 +44,27 @@ def private_dir(path: Path) -> Path:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
     if not path.is_dir() or path.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise VaultError(f"{path} must be a real directory owned by this user with mode 0700")
+        raise VaultError("state_dir_unsafe: state directories must be real directories owned by this user, mode 0700")
     return path
+
+
+def stop_requested(state_dir: Path, sequence_id: str | None = None) -> bool:
+    """A ``STOP`` file stops every send; ``stop-<sequenceId>`` stops one sequence."""
+    return (state_dir / "STOP").exists() or bool(sequence_id and (state_dir / f"stop-{sequence_id}").exists())
+
+
+@contextmanager
+def exclusive(path: Path) -> Iterator[None]:
+    """Hold an exclusive flock on ``path`` or raise ``Busy`` at once."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Busy("busy: another gateway process holds the lock; try again") from None
+        yield
+    finally:
+        os.close(fd)
 
 
 def write_private(path: Path, data: bytes) -> None:

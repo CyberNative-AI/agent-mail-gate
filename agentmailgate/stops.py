@@ -26,6 +26,10 @@ Matching rules, each learned from a real mistake:
 * A helpdesk that wraps our exact subject in its own is an auto-reply for that
   row; a bare ``Re:``/``Fwd:`` of our subject is a person.  A subject shared by
   two rows names nobody.
+* A recipient we have not mailed yet can still opt out: an opt-out from that
+  address stops the row before its first touch.  Nothing else names such a row.
+* If a report's body cannot be fetched, ``classify`` raises: the caller sends
+  nothing and reads the message again, rather than losing a stop.
 """
 from __future__ import annotations
 
@@ -205,7 +209,8 @@ def sender_block_report(text: str) -> bool:
 
 def classify(headers: bytes, fetch_body: Callable[[], bytes], our_ids: dict[str, Row],
              recipients: dict[str, list[Row]], own: frozenset[str] = frozenset(),
-             subjects: dict[str, list[Row]] | None = None) -> list[tuple[str, str, str]]:
+             subjects: dict[str, list[Row]] | None = None,
+             unsent: dict[str, list[Row]] | None = None) -> list[tuple[str, str, str]]:
     """Return [(kind, sequenceId, rowId)] for one inbound message.
 
     our_ids     our sent Message-IDs -> row
@@ -213,6 +218,11 @@ def classify(headers: bytes, fetch_body: Callable[[], bytes], our_ids: dict[str,
     own         our own sending/reply addresses (ascii-lowered)
     subjects    subject_key(first-touch subject) -> rows; used only when no
                 sender or reference names a row
+    unsent      address_key(recipient) -> rows not mailed yet; matched only
+                by an explicit opt-out from that address
+
+    Raises whatever ``fetch_body`` raises: a report that cannot be read must
+    block sending, not become an unmatched event.
     """
     message = email.message_from_bytes(headers, policy=email.policy.compat32)
     sender = ascii_lower(parseaddr(str(message.get("From", "")))[1].strip())
@@ -228,10 +238,7 @@ def classify(headers: bytes, fetch_body: Callable[[], bytes], our_ids: dict[str,
     matched_by_ref = {our_ids[r] for r in refs if r in our_ids}
 
     def from_body(kind: str) -> list[tuple[str, str, str]]:
-        try:
-            body = fetch_body()
-        except Exception:
-            return [(kind + "_unmatched", "", "")]
+        body = fetch_body()  # a failure propagates: see the docstring
         if kind == "bounce" and re.search(rb"(?im)^action:\s*delayed\b", body) and not re.search(rb"(?im)^action:\s*failed\b", body):
             return []
         by_id = {our_ids[r] for r in our_ids if r.encode() in body}
@@ -276,9 +283,11 @@ def classify(headers: bytes, fetch_body: Callable[[], bytes], our_ids: dict[str,
             or message.get("X-Autoreply") is not None or message.get("X-Autorespond") is not None
             or str(message.get("Precedence", "")).strip().casefold() in ("auto_reply", "bulk", "junk")
             or AUTO_SUBJECT.search(subject) is not None)
-    if not owners:
+    opted_out = not auto and OPTOUT_SUBJECT.search(subject) is not None
+    waiting = set(unsent.get(sender, [])) - owners if unsent and opted_out and sender not in own else set()
+    if not owners and not waiting:
         if subjects and sender not in own:
             return _subject_match(subject, subjects, auto)
         return []
-    kind = "auto_replied" if auto else ("opted_out" if OPTOUT_SUBJECT.search(subject) else "replied")
-    return [(kind, seq, row) for seq, row in sorted(owners)]
+    kind = "auto_replied" if auto else ("opted_out" if opted_out else "replied")
+    return [(kind, seq, row) for seq, row in sorted(owners)] + [("opted_out", seq, row) for seq, row in sorted(waiting)]

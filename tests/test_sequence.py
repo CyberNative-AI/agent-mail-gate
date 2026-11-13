@@ -1,15 +1,20 @@
 import datetime as dt
 import json
+import os
 import random
+import stat
+import threading
 import unittest
 from pathlib import Path
 
 from agentmailgate.approval import Approvals
 from agentmailgate.sequence import Engine, SequenceError, validate_batch
 from agentmailgate.transport import NotSent
+from agentmailgate.vault import VaultError
 from tests.helpers import ROOT, Clock, FakeOutbox, make_config, tempdir
 
 MONDAY_15Z = dt.datetime(2026, 12, 7, 15, 0, tzinfo=dt.timezone.utc)
+DSN_HEAD = "From: MAILER-DAEMON@mx.example.org\nContent-Type: multipart/report; report-type=delivery-status\n\n"
 
 
 def batch(rows=None, seq="demo"):
@@ -231,6 +236,115 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(SequenceError, "changed"):
             self.engine.resume("demo", seen_by_owner)
 
+
+    # -- concurrency, report-read failure, pre-send opt-out and STOP admission
+    def test_concurrent_ticks_admit_one_send(self):
+        """Tick A pauses after choosing its step, before the claim.  Tick B,
+        from another engine on the same state, must not admit any send."""
+        self.cfg = make_config(self.tmp, gap_min_s=60, gap_max_s=60, new_per_day=1)
+        chosen, release = threading.Event(), threading.Event()
+
+        class PausedEngine(Engine):
+            def _send(self, *args, **kwargs):
+                chosen.set()
+                release.wait(10)
+                return super()._send(*args, **kwargs)
+
+        a = PausedEngine(self.cfg, self.outbox, now=self.clock, rng=random.Random(1))
+        b = Engine(self.cfg, self.outbox, now=self.clock, rng=random.Random(2))
+        a.approve(batch(), not_before=MONDAY_15Z, days=30)
+        results = {}
+        worker = threading.Thread(target=lambda: results.setdefault("a", a.tick(inbound_from([]))))
+        worker.start()
+        self.assertTrue(chosen.wait(10))
+        results["b"] = b.tick(inbound_from([]))
+        try:
+            b.resume("demo", [])
+            resume_error = None
+        except Exception as exc:  # checked after the send assertions
+            resume_error = exc
+        release.set()
+        worker.join(10)
+        self.assertEqual([to for to, _m in self.outbox.sent], ["alex@example.org"])
+        self.assertEqual(results["b"], {"result": "no_send", "why": "busy"})
+        self.assertEqual(results["a"]["result"], "sent")
+        self.assertIsInstance(resume_error, VaultError)
+        self.assertIn("busy", str(resume_error))
+        # The cap still holds once the lock is free: new_per_day=1.
+        self.clock.advance(minutes=5)
+        self.assertEqual(b.tick(inbound_from([]))["why"], "nothing_due")
+        self.assertEqual(len(self.outbox.sent), 1)
+
+    def test_stop_file_after_tick_start_blocks_claim(self):
+        state = self.cfg.state_dir
+
+        class LateStop(Engine):  # STOP lands after the step is chosen, before the claim
+            def _send(self, *args, **kwargs):
+                (state / "STOP").touch()
+                return super()._send(*args, **kwargs)
+
+        engine = LateStop(self.cfg, self.outbox, now=self.clock, rng=random.Random(1))
+        engine.approve(batch(), not_before=MONDAY_15Z, days=30)
+        self.assertEqual(engine.tick(inbound_from([]))["result"], "stopped")
+        self.assertEqual(self.outbox.sent, [])
+        self.assertFalse(engine.ledger("demo").has("claim"))
+
+    def test_state_dir_stays_private_under_common_umask(self):
+        cfg = make_config(self.tmp / "fresh")
+        old = os.umask(0o022)
+        try:
+            Approvals(cfg.state_dir).init_key()
+        finally:
+            os.umask(old)
+        self.assertEqual(stat.S_IMODE(cfg.state_dir.stat().st_mode), 0o700)
+        Engine(cfg, self.outbox, now=self.clock)  # refused state_dir_unsafe before
+
+    def test_report_fetch_failure_blocks_send_and_is_read_again(self):
+        self.approve()
+        self.tick()
+        report = (DSN_HEAD + "Final-Recipient: rfc822; alex@example.org\nAction: failed\nStatus: 5.1.1\n").encode()
+        head = report.split(b"\n\n", 1)[0] + b"\n\n"
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionResetError("retr failed")
+            return report
+
+        def read(seen):
+            if "u0" not in seen:
+                yield "u0", head, flaky
+
+        self.clock.advance(minutes=5)
+        self.assertEqual(self.engine.tick(read)["why"], "inbound_read_failed:ConnectionResetError")
+        self.assertEqual(len(self.outbox.sent), 1)
+        self.clock.advance(minutes=5)
+        self.assertEqual(self.engine.tick(read)["result"], "sent")  # r2, after the stop was applied
+        self.assertEqual(self.engine.ledger("demo").rows()["r1"]["status"], "bounce")
+        self.assertEqual(calls["n"], 2)
+
+    def test_opt_out_before_first_touch_stops_row(self):
+        self.approve()
+        self.mail.append(b"From: Sam <sam@example.net>\nSubject: Please remove me from your list\n\nno thanks\n")
+        self.assertEqual(self.tick()["result"], "sent")
+        self.assertEqual(self.engine.ledger("demo").rows()["r2"]["status"], "opted_out")
+        self.step(minutes=5)
+        self.step(minutes=5)
+        self.assertEqual([to for to, _m in self.outbox.sent], ["alex@example.org"])
+
+    def test_ordinary_mail_before_first_touch_does_not_stop_row(self):
+        self.approve()
+        self.mail.append(b"From: Sam <sam@example.net>\nSubject: Your newsletter\n\nhello\n")
+        self.mail.append(b"From: sam@example.net\nAuto-Submitted: auto-replied\nSubject: Unsubscribe confirmation\n\n")
+        self.tick()
+        self.step(minutes=5)
+        self.assertEqual(sorted(to for to, _m in self.outbox.sent), ["alex@example.org", "sam@example.net"])
+        # A reply to a sent row is still a reply.
+        mid = self.outbox.sent[0][1]["Message-ID"]
+        self.mail.append(f"From: alex@example.org\nIn-Reply-To: {mid}\nSubject: Re: hi\n\nthanks\n".encode())
+        self.step(minutes=5)
+        self.assertEqual(self.engine.ledger("demo").rows()["r1"]["status"], "replied")
 
 if __name__ == "__main__":
     unittest.main()

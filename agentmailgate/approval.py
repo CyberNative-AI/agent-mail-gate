@@ -39,7 +39,9 @@ def sha256(data: bytes) -> str:
 
 class Approvals:
     def __init__(self, state_dir: Path) -> None:
-        self.root = private_dir(state_dir / "approvals")
+        # mkdir(parents=True) gives missing parents the umask mode, so make
+        # the state dir private first, as Vault and Engine do.
+        self.root = private_dir(private_dir(state_dir) / "approvals")
         self.key_path = state_dir / "owner.key"
 
     def init_key(self) -> None:

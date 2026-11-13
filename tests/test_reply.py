@@ -84,5 +84,17 @@ class ReplyTests(unittest.TestCase):
             reply.approve(self.cfg, self.clean.message_ref, b"text")
 
 
+    def test_stop_file_refuses_reply(self):
+        reply.approve(self.cfg, self.clean.message_ref, b"text")
+        stop = self.cfg.state_dir / "STOP"
+        stop.touch()
+        box = FakeOutbox()
+        with self.assertRaisesRegex(VaultError, "stopped"):
+            reply.send(self.cfg, self.clean.message_ref, box)
+        self.assertEqual(box.sent, [])
+        stop.unlink()  # the approval is unspent: it sends once STOP is gone
+        self.assertEqual(reply.send(self.cfg, self.clean.message_ref, box), "accepted")
+        self.assertEqual(len(box.sent), 1)
+
 if __name__ == "__main__":
     unittest.main()

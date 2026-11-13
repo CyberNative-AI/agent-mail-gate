@@ -157,7 +157,7 @@ def decode_value(value: str | None) -> str:
         return value
 
 
-def normalize_text(value: str, limit: int) -> str:
+def normalize_text(value: str, limit: int | None) -> str:
     value = html.unescape(value)
     value = CONTROL_PATTERN.sub(" ", value)
     value = re.sub(r"\r\n?", "\n", value)
@@ -199,7 +199,15 @@ def redact_urls(value: str) -> str:
 
 
 def sanitize_display_text(value: str, limit: int) -> str:
-    return normalize_text(redact_urls(value), limit)
+    """Decode fully, then remove links, then truncate; nothing decodes after.
+
+    Entity decoding runs first so an encoded ``https&#58;//`` is a link by the
+    time redaction looks.  A final pass replaces anything that still reads as
+    a link (a host label such as ``a.www.example`` would) with a fixed marker
+    that cannot match.  Fields built here must not be normalized again.
+    """
+    text = redact_urls(normalize_text(value, max(limit, ANALYSIS_CHARS)))[:limit].strip()
+    return ACTIVE_LINK_PATTERN.sub("[external-link removed]", text)
 
 
 def body_texts(message: Message, excerpt_chars: int) -> tuple[str, str]:
@@ -234,10 +242,14 @@ def attachment_metadata(message: Message) -> tuple[tuple[str, ...], tuple[str, .
         disposition = (part.get_content_disposition() or "").lower()
         if not filename and disposition != "attachment":
             continue
-        full_name = normalize_text(filename or "unnamed", 4096)
-        names.append(full_name)
-        # Take the suffix before display truncation: a long name cannot hide ".exe".
-        suffixes.append(PurePosixPath(full_name.replace("\\", "/")).suffix.lower())
+        decoded = filename or "unnamed"
+        names.append(normalize_text(decoded, 4096))
+        # Judge the complete decoded name, before any truncation, both as sent
+        # and entity-decoded; Windows drops trailing dots and spaces, so
+        # "x.exe. " is ".exe".  A long name cannot hide ".exe".
+        for candidate in (decoded, normalize_text(decoded, None)):
+            tail = candidate.replace("\\", "/").rstrip(". \t")
+            suffixes.append(PurePosixPath(tail).suffix.lower() if tail else "")
     return tuple(names), tuple(suffixes)
 
 
@@ -514,7 +526,7 @@ def _screen(raw: bytes, cfg: Screening, mailbox_key: str) -> Verdict:
         disposition=disposition,
         reasons=tuple(sorted(reasons)),
         message_ref=message_reference(key, message),
-        from_address=normalize_text(from_address, 254),
+        from_address=from_address,  # already sanitized; decoding again could revive a link
         from_domain=from_domain,
         reply_to_address=(reply_address or from_address) if clean else "",
         subject=sanitize_display_text(raw_subject, 300) if clean else "",

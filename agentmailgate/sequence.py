@@ -20,6 +20,11 @@ Every send is claimed in an append-only, fsynced ledger *before* SMTP.  A claim
 with no outcome is ``uncertain`` and that row is never sent again
 automatically: a lost reply from the server must not become a duplicate.
 
+One tick holds an exclusive lock on ``sequence.lock`` from the STOP check
+through the claim and the send outcome; a second tick, or an owner resume,
+that finds the lock held does nothing.  Two timers can never pick the same
+step or each spend the last of a daily cap.
+
 A halt stays until the owner resumes it, naming every open halt.  A halt that
 arrives after the owner read the batch makes the resume invalid, so the owner
 never clears a halt they did not see.  A resumed batch sends follow-ups only.
@@ -38,7 +43,7 @@ from . import stops
 from .approval import KIND_SEQUENCE, Approvals, ApprovalError, canonical, sha256
 from .config import ADDRESS, Config
 from .transport import NotSent, Outbox, build_message, make_message_id
-from .vault import private_dir, write_private
+from .vault import Busy, exclusive, private_dir, stop_requested, write_private
 
 ROW_ID = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 SEQ_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,47}\Z")
@@ -85,11 +90,13 @@ def validate_batch(data: bytes) -> dict[str, Any]:
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_ROWS:
         raise SequenceError(f"rows: 1 to {MAX_ROWS}")
     seen_ids, seen_to = set(), set()
-    for row in rows:
+    for index, row in enumerate(rows, 1):
         if not isinstance(row, dict) or set(row) != {"id", "to", "steps"}:
-            raise SequenceError("each row has exactly id, to, steps")
+            raise SequenceError(f"row #{index}: keys must be exactly id, to, steps")
+        # Messages name a row by its position until its id has passed ROW_ID:
+        # an error never repeats text from the file.
         if not isinstance(row["id"], str) or not ROW_ID.fullmatch(row["id"]) or row["id"] in seen_ids:
-            raise SequenceError(f"row id invalid or repeated: {row.get('id')!r}")
+            raise SequenceError(f"row #{index}: id invalid or repeated (letters, digits, _ or -; 1-32 chars)")
         if not isinstance(row["to"], str) or not ADDRESS.fullmatch(row["to"]):
             raise SequenceError(f"row {row['id']}: to is not one plain address")
         key = stops.address_key(row["to"])
@@ -187,6 +194,7 @@ class Engine:
         self.seq_root = private_dir(self.root / "sequences")
         self.approvals = Approvals(cfg.state_dir)
         self.global_path = self.root / "sequence-global.json"
+        self.lock_path = self.root / "sequence.lock"
 
     # -- storage
     def _dir(self, seq: str) -> Path:
@@ -215,7 +223,8 @@ class Engine:
                 continue
             data = batch_path.read_bytes()
             if sha256(data) != approval["batchSha256"]:
-                raise SequenceError(f"{path.name}: batch bytes changed after approval")
+                name = path.name if SEQ_ID.fullmatch(path.name) else "a sequence"
+                raise SequenceError(f"{name}: batch bytes changed after approval")
             out.append((path.name, approval, validate_batch(data)))
         return out
 
@@ -233,7 +242,15 @@ class Engine:
         return payload
 
     def resume(self, seq: str, halts: list[list[str]]) -> None:
-        """Owner resume: valid only if ``halts`` is exactly the open list now."""
+        """Owner resume: valid only if ``halts`` is exactly the open list now.
+
+        Runs under the tick lock, so no halt can land between the comparison
+        and the resume record.
+        """
+        with exclusive(self.lock_path):
+            self._resume(seq, halts)
+
+    def _resume(self, seq: str, halts: list[list[str]]) -> None:
         ledger = self.ledger(seq)
         if not ledger.open_halts():
             raise SequenceError("nothing to resume")
@@ -244,9 +261,16 @@ class Engine:
 
     # -- tick
     def stopped(self, seq: str | None = None) -> bool:
-        return (self.root / "STOP").exists() or bool(seq and (self.root / f"stop-{seq}").exists())
+        return stop_requested(self.root, seq)
 
     def tick(self, inbound: Callable[[set[str]], Inbound] | None) -> dict[str, Any]:
+        try:
+            with exclusive(self.lock_path):
+                return self._tick(inbound)
+        except Busy:
+            return {"result": "no_send", "why": "busy"}
+
+    def _tick(self, inbound: Callable[[set[str]], Inbound] | None) -> dict[str, Any]:
         if self.stopped():
             return {"result": "stopped", "why": "STOP file"}
         seqs = self.sequences()
@@ -255,6 +279,9 @@ class Engine:
             try:
                 self._read_inbound(inbound, seqs, state)
             except Exception as exc:  # stops unseen -> no send
+                # Keep what was fully applied; the failed item stays unseen and
+                # is read again next tick.
+                self._save_global(state)
                 return {"result": "no_send", "why": f"inbound_read_failed:{type(exc).__name__}"}
             self._save_global(state)
         elif seqs:
@@ -265,11 +292,15 @@ class Engine:
         our_ids: dict[str, tuple[str, str]] = {}
         recipients: dict[str, list[tuple[str, str]]] = {}
         subjects: dict[str, list[tuple[str, str]]] = {}
+        unsent: dict[str, list[tuple[str, str]]] = {}
         for seq, _approval, batch in seqs:
             ledger = self.ledger(seq)
             rows = ledger.rows()
             for row in batch["rows"]:
                 if not rows.get(row["id"], {}).get("sent") and not rows.get(row["id"], {}).get("claims"):
+                    # Not yet mailed: only an explicit opt-out from this address
+                    # can name the row, and it stops the first touch.
+                    unsent.setdefault(stops.address_key(row["to"]), []).append((seq, row["id"]))
                     continue
                 recipients.setdefault(stops.address_key(row["to"]), []).append((seq, row["id"]))
                 subjects.setdefault(stops.subject_key(row["steps"][0]["subject"]), []).append((seq, row["id"]))
@@ -279,7 +310,7 @@ class Engine:
         own = frozenset(stops.address_key(a) for a in (self.cfg.sender.from_address, self.cfg.sender.reply_to) if a)
         seen = set(state["seenUidls"])
         for uidl, headers, fetch in inbound(seen):
-            for kind, seq, row in stops.classify(headers, fetch, our_ids, recipients, own, subjects):
+            for kind, seq, row in stops.classify(headers, fetch, our_ids, recipients, own, subjects, unsent):
                 self._apply(kind, seq, row, [s for s, _a, _b in seqs])
             state["seenUidls"].append(uidl)
         for seq, _approval, _batch in seqs:
@@ -394,6 +425,8 @@ class Engine:
         message = build_message(self.cfg, to=row["to"], subject=subject, body=row["steps"][step - 1]["body"],
                                 message_id=message_id, anchors=anchors)
         base = {"rowId": row["id"], "step": step, "messageId": message_id}
+        if self.stopped(seq):  # last check before the claim; the lock is held
+            return {"result": "stopped", "why": "STOP file"}
         ledger.append({"event": "claim", "at": iso(now), **base})
         gap = self.rng.randint(self.cfg.pace.gap_min_s, self.cfg.pace.gap_max_s)
         state["nextSendAt"] = iso(now + dt.timedelta(seconds=gap))

@@ -37,7 +37,11 @@ from .transport import FileOutbox, PopReader, SmtpOutbox
 from .vault import Vault, VaultError, private_dir, write_private
 
 
-OWN_ERRORS = (ApprovalError, ConfigError, SequenceError, VaultError, FileNotFoundError, tomllib.TOMLDecodeError)
+# These carry fixed text, row positions or ids that passed validation: never a
+# supplied value, a path or mail content.  Other errors print a fixed code or
+# their type only.
+OWN_ERRORS = (ApprovalError, ConfigError, SequenceError, VaultError)
+FILE_ERRORS = {FileNotFoundError: "file_not_found", tomllib.TOMLDecodeError: "config_not_toml"}
 
 
 def _outbox(cfg: Config, args: argparse.Namespace):
@@ -170,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.fn(load(Path(args.config)), args)
     except OWN_ERRORS as exc:  # our own messages carry codes, never mail content
         print(f"amg: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    except tuple(FILE_ERRORS) as exc:  # the text would name the path or quote the file
+        print(f"amg: {type(exc).__name__}: {FILE_ERRORS[type(exc)]}", file=sys.stderr)
         return 2
     except Exception as exc:  # anything else: the type only, no text that could quote mail
         print(f"amg: {type(exc).__name__}", file=sys.stderr)

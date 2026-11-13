@@ -24,15 +24,15 @@
 | Threat | Response |
 |---|---|
 | Prompt injection in a message | Pattern match on headers, body (HTML included) and attachment names. A match holds the message; the agent sees no text from it. |
-| Phishing links | Every link in a clean excerpt is replaced by its host name. A link with a login/verify path, an IP address, punycode, a shortener or embedded credentials marks the message risky. |
-| Dangerous attachments | Executable and macro extensions hold the message, judged on the full file name so a long name cannot hide `.exe`. Agents never get attachment bytes. |
+| Phishing links | Every link in a clean excerpt is replaced by its host name, after HTML entities are decoded, so an encoded `https&#58;//` is caught; nothing is decoded after the link is removed. A link with a login/verify path, an IP address, punycode, a shortener or embedded credentials marks the message risky. |
+| Dangerous attachments | Executable and macro extensions hold the message, judged on the complete decoded file name before any truncation, so a long name cannot hide `.exe`; trailing dots and spaces are ignored. Agents never get attachment bytes. |
 | Someone pretending to be you | Mail from your own domain is held unless it is verified owner mail. Domains within two edits of yours are flagged as lookalikes. |
 | Someone pretending to be the owner | `ownerVerified` needs the owner's exact address, a single From header, and `dmarc=pass` with a matching `header.from` in the *topmost* `Authentication-Results` header from your provider's authserv-id. Senders can add their own such headers below it; those are ignored. A verified owner message that contains injection text is still held. |
 | An agent sends something you did not approve | The gateway sends only bytes signed with `owner.key`, re-hashes them at send time, and refuses any change. Replies go only to the address the screened message named, in its thread, with a fixed subject. |
-| A send repeated after a crash | Every send is claimed on disk before SMTP. An unresolved claim is never retried automatically. |
-| Mail after someone said stop | Inbound mail is read before each send; if that read fails, nothing is sent. Replies, auto-replies, opt-outs and bounces stop the row. |
-| A campaign that is going wrong | Complaints, blocks on the sender, or a high bounce rate halt the batch. Only the owner can resume, and only by naming every open halt. A `STOP` file stops everything. |
-| Leaking mail content | Stored mail is encrypted with a local key; files are owner-only (0600/0700). Status output carries row ids and counts, never addresses or text. Errors print the exception type, not message content. |
+| A send repeated after a crash, or by two timers at once | Every send is claimed on disk before SMTP. An unresolved claim is never retried automatically. One sequence tick at a time holds an exclusive lock from its STOP check to the send outcome; a second tick or an owner resume that finds it held does nothing. |
+| Mail after someone said stop | Inbound mail is read before each send; if that read fails, including fetching a delivery or abuse report, nothing is sent and the message is read again next time. Replies, auto-replies, opt-outs and bounces stop the row. An opt-out from a recipient you have not mailed yet stops that row before its first message. |
+| A campaign that is going wrong | Complaints, blocks on the sender, or a high bounce rate halt the batch. Only the owner can resume, and only by naming every open halt. A `STOP` file stops every send: sequences and approved replies. |
+| Leaking mail content | Stored mail is encrypted with a local key; files are owner-only (0600/0700). Status output carries row ids and counts, never addresses or text. Errors print our own fixed codes (with a row position or a validated id at most) or the exception type: never mail content, supplied values or file paths. |
 | Hostile input crashing the scanner | Parsing failures produce a content-free quarantined record; one bad message never blocks the rest. |
 
 ## What you must do

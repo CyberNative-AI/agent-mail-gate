@@ -4,7 +4,8 @@ The reply goes only to the address the screened message itself named
 (Reply-To, else From), in the same thread, with the subject fixed to
 ``Re: <original>``.  The owner approves the exact body bytes; the send is
 claimed exclusively before SMTP, so one approval can produce at most one
-message, and a crash between claim and outcome never re-sends.
+message, and a crash between claim and outcome never re-sends.  A ``STOP``
+file in the state directory refuses every reply, as it does every sequence send.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from typing import Any
 from .approval import KIND_REPLY, Approvals, sha256
 from .config import Config
 from .transport import NotSent, Outbox, build_message, make_message_id
-from .vault import Vault, VaultError, write_private
+from .vault import Vault, VaultError, stop_requested, write_private
 
 
 def expected_subject(original: str) -> str:
@@ -52,6 +53,8 @@ def send(cfg: Config, ref: str, outbox: Outbox) -> str:
     domain = cfg.sender.message_id_domain or cfg.sender.from_address.rpartition("@")[2]
     message = build_message(cfg, to=payload["to"], subject=payload["subject"], body=body.decode("utf-8"),
                             message_id=make_message_id(domain), anchors=[target["threadMessageId"]])
+    if stop_requested(cfg.state_dir):
+        raise VaultError("stopped: a STOP file is present; nothing was sent")
     claim: Path = vault.claim_reply(ref, sha256(bytes(message)))
     try:
         outcome = outbox.send(message, payload["to"])

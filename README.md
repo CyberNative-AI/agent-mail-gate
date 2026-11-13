@@ -21,7 +21,7 @@ jobs we found we could not leave to a model:
    the same thread. Replies, opt-outs, bounces and complaints stop rows. A
    complaint, a bounce that reports a block on *you*, or a bounce rate over the
    limit halts the batch until the owner resumes it. A `STOP` file stops
-   everything.
+   every send, replies included.
 
 It also tells your agents when mail really comes from you: `ownerVerified` is
 true only when the From address is a configured owner and your *receiving*
@@ -157,14 +157,22 @@ are, that they have any authority, or that the request is safe to act on.
 - Each send is written to an fsynced, append-only ledger *before* SMTP. If the
   process dies or the server's answer is lost, that row is `uncertain` and is
   never sent again automatically.
-- Inbound mail is read before every send. If the read fails, nothing is sent.
+- Inbound mail is read before every send. If the read fails, or a delivery or
+  abuse report cannot be fetched, nothing is sent and the message is read again
+  next tick.
+- Only one tick runs at a time: a tick holds an exclusive lock from its STOP
+  check to the send outcome, and a second tick (or a resume) that finds it held
+  does nothing.
 - Stops: a reply, auto-reply or opt-out stops its row; a bounce stops its row.
+  An opt-out from a recipient not yet mailed stops that row before its first
+  message.
 - Halts: a complaint, a bounce that reports a block on the sender (5.7.1,
   spam, reputation, policy), or bounces at or above `bounce_halt_min` and over
   `bounce_halt_rate` halt the batch. `sequence resume` must name every open
   halt exactly as `status` shows it; a halt that arrived after you looked makes
   the resume fail. A resumed batch sends follow-ups only.
-- `STOP` in the state directory stops all sending; `stop-<sequenceId>` stops one.
+- `STOP` in the state directory stops all sending, approved replies included;
+  `stop-<sequenceId>` stops one sequence.
 
 ## Limits and non-goals
 

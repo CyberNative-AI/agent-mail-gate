@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from agentmailgate.screen import screen
+from agentmailgate.screen import ACTIVE_LINK_PATTERN, sanitize_display_text, screen
 from tests.helpers import ROOT, make_config, tempdir
 
 MAIL = ROOT / "examples" / "mail"
@@ -155,6 +155,43 @@ Message-ID: <b1@example.org>""", "x" * 600_000)
             b"Message-ID: <q1.abc@example.org>", b"Message-ID: <q1@example.org>\nMessage-ID: <q2@example.org>")
         self.assertEqual(self.verdict(raw).thread_message_id, "")
 
+
+    # -- link redaction after decoding; attachment suffix from the full name
+    def test_encoded_links_never_survive_display_fields(self):
+        encoded = ("https&#58;//evil.example/docs", "https&#x3a;&#x2f;&#x2f;evil.example/docs",
+                   "www&#46;evil.example/docs", "&#104;ttps://evil.example/docs",
+                   "https://a.www.evil.example/docs", "https://www.www.evil.example/docs")
+        for value in encoded:
+            with self.subTest(value=value):
+                out = sanitize_display_text(f"see {value} today", 300)
+                self.assertIsNone(ACTIVE_LINK_PATTERN.search(out), out)
+                self.assertNotIn("evil.example/docs", out)
+        raw = msg("From: a@example.org\nTo: hello@example.com\nSubject: notes https&#58;//evil.example/docs\n"
+                  "Message-ID: <e1@example.org>",
+                  "Docs: https&#58;//evil.example/docs and www&#46;evil.example/docs")
+        view = self.verdict(raw).agent_view()
+        self.assertEqual(view["disposition"], "clean")
+        for key in ("from", "replyTo", "subject", "date", "excerpt"):
+            self.assertIsNone(ACTIVE_LINK_PATTERN.search(view[key]), (key, view[key]))
+        self.assertIn("[external-link removed: evil.example]", view["excerpt"])
+        # The From field is sanitized once; a second decode would revive "www.".
+        raw = msg("From: www&amp#46evil.example@example.org\nTo: hello@example.com\nSubject: hi\n"
+                  "Message-ID: <e2@example.org>")
+        view = self.verdict(raw).agent_view()
+        self.assertEqual(view["disposition"], "clean")
+        for key in ("from", "replyTo"):
+            self.assertIsNone(ACTIVE_LINK_PATTERN.search(view[key]), (key, view[key]))
+
+    def test_ordinary_text_is_unchanged_by_link_redaction(self):
+        self.assertEqual(sanitize_display_text("Tom &amp; Jerry, 3 &lt; 4", 300), "Tom & Jerry, 3 < 4")
+
+    def test_over_limit_name_cannot_hide_extension(self):
+        for name in (b"a" * 5000 + b".exe", b"invoice.exe. ", b"invoice.ex&#101;"):
+            with self.subTest(name=name[-12:]):
+                raw = (MAIL / "03-phish.eml").read_bytes().replace(b"statement.pdf.exe", name)
+                self.assertIn("dangerous_attachment", self.verdict(raw).reasons)
+        raw = (MAIL / "03-phish.eml").read_bytes().replace(b"statement.pdf.exe", b"a" * 5000 + b".pdf")
+        self.assertNotIn("dangerous_attachment", self.verdict(raw).reasons)
 
 if __name__ == "__main__":
     unittest.main()

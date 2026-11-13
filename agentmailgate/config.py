@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 ADDRESS = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 DOMAIN = re.compile(r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}\Z")
 
 
@@ -50,7 +51,10 @@ class Mailbox:
         user = os.environ.get(self.user_env, "")
         password = os.environ.get(self.password_env, "")
         if not user or not password:
-            raise ConfigError(f"set {self.user_env} and {self.password_env} in the gateway's environment")
+            names = (self.user_env, self.password_env)
+            if all(ENV_NAME.fullmatch(n) for n in names):
+                raise ConfigError(f"set {names[0]} and {names[1]} in the gateway's environment")
+            raise ConfigError("set the mailbox.user_env and mailbox.password_env variables in the gateway's environment")
         return user, password
 
 
@@ -88,18 +92,18 @@ class Config:
 
 def _addresses(values: Any, name: str) -> tuple[str, ...]:
     out = []
-    for value in values or ():
+    for index, value in enumerate(values or (), 1):
         if not isinstance(value, str) or not ADDRESS.fullmatch(value):
-            raise ConfigError(f"{name}: not an address: {value!r}")
+            raise ConfigError(f"{name} entry #{index}: not one plain address")
         out.append(value.casefold())
     return tuple(out)
 
 
 def _domains(values: Any, name: str) -> tuple[str, ...]:
     out = []
-    for value in values or ():
+    for index, value in enumerate(values or (), 1):
         if not isinstance(value, str) or not DOMAIN.fullmatch(value.lower()):
-            raise ConfigError(f"{name}: not a domain: {value!r}")
+            raise ConfigError(f"{name} entry #{index}: not a domain")
         out.append(value.lower())
     return tuple(out)
 
@@ -110,10 +114,11 @@ def from_dict(data: dict[str, Any], base: Path) -> Config:
     if not isinstance(recipients, dict):
         raise ConfigError("screening.own_recipients must be a table of address = label")
     own = {}
-    for address, label in recipients.items():
-        _addresses([address], "screening.own_recipients")
+    for index, (address, label) in enumerate(recipients.items(), 1):
+        if not ADDRESS.fullmatch(address):
+            raise ConfigError(f"screening.own_recipients entry #{index}: not one plain address")
         if not isinstance(label, str) or not re.fullmatch(r"[a-z0-9_-]{1,32}", label):
-            raise ConfigError(f"screening.own_recipients: bad label {label!r}")
+            raise ConfigError(f"screening.own_recipients entry #{index}: label must be [a-z0-9_-], 1-32 chars")
         own[address.casefold()] = label
     screening = Screening(
         protected_domains=_domains(s.get("protected_domains"), "screening.protected_domains"),
