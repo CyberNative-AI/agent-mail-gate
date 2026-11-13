@@ -1,0 +1,9 @@
+__pycache__/
+*.egg-info/
+build/
+.venv/
+gate.toml
+state/
+demo-state/
+outbox/
+inbound/

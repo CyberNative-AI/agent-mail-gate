@@ -1,0 +1,40 @@
+# agent-mail-gate configuration.  Copy to gate.toml and edit.
+# Credentials are never stored here: set the two environment variables named
+# under [mailbox] in the gateway's own environment.
+
+state_dir = "state"          # created 0700; holds the vault, ledgers, owner.key
+
+[screening]
+protected_domains = ["example.com"]               # domains you own
+own_recipients = { "hello@example.com" = "hello" } # your inbound addresses -> labels
+owner_addresses = ["owner@example.com"]            # whose verified mail may instruct agents
+trusted_authserv_ids = ["mx.example.net"]          # YOUR receiving provider's authserv-id
+max_message_bytes = 512000
+excerpt_chars = 1600
+
+[mailbox]
+pop_host = "pop.example.net"
+pop_port = 995
+smtp_host = "smtp.example.net"
+smtp_port = 465
+user_env = "AMG_MAIL_USER"
+password_env = "AMG_MAIL_PASSWORD"
+
+[sender]
+from_address = "hello@example.com"
+from_name = "Example Co"
+reply_to = "hello@example.com"
+message_id_domain = "example.com"
+
+[pace]
+window_start_hour_utc = 13
+window_end_hour_utc = 21
+weekdays_only = true
+holidays = []                 # ["2026-12-25", ...]
+gap_min_s = 120
+gap_max_s = 300
+new_per_day = 20
+max_sends_per_day = 80
+followup_business_days = [3, 7]
+bounce_halt_rate = 0.03
+bounce_halt_min = 2

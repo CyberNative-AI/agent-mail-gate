@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sequenceId": "demo-intro",
+  "rows": [
+    {"id": "r1", "to": "alex@example.org", "steps": [
+      {"subject": "A question about your release checks for the new year", "body": "Hi Alex,\n\nShort question about your release checks...\n\nExample Co"},
+      {"body": "Hi Alex, a quick follow-up on my note below.\n\nExample Co"}
+    ]},
+    {"id": "r2", "to": "sam@example.net", "steps": [
+      {"subject": "A question about your scheduling jobs this winter", "body": "Hi Sam,\n\nShort question about your scheduled jobs...\n\nExample Co"}
+    ]}
+  ]
+}

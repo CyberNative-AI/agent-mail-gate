@@ -1,0 +1,22 @@
+# Demo configuration for the quickstart: no real mailbox, sends go to ./outbox.
+# The send window is open all day, every day, so the demo works whenever you try it.
+state_dir = "../demo-state"
+
+[screening]
+protected_domains = ["example.com"]
+own_recipients = { "hello@example.com" = "hello" }
+owner_addresses = ["owner@example.com"]
+trusted_authserv_ids = ["mx.example.net"]
+
+[sender]
+from_address = "hello@example.com"
+from_name = "Example Co"
+reply_to = "hello@example.com"
+message_id_domain = "example.com"
+
+[pace]
+window_start_hour_utc = 0
+window_end_hour_utc = 24
+weekdays_only = false
+gap_min_s = 0
+gap_max_s = 0

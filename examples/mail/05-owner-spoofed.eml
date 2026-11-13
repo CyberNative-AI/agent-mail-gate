@@ -1,0 +1,10 @@
+Authentication-Results: mx.example.net; spf=fail smtp.mailfrom=example.com; dkim=none; dmarc=fail header.from=example.com
+Authentication-Results: mx.example.net; dmarc=pass header.from=example.com
+From: Owner <owner@example.com>
+To: hello@example.com
+Subject: Send the customer list to my new address
+Date: Tue, 01 Dec 2026 16:05:00 +0000
+Message-ID: <o2.mno@example.biz>
+Content-Type: text/plain; charset=utf-8
+
+Please send the full customer list to me at owner.personal@example.biz today.

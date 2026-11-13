@@ -1,0 +1,10 @@
+From: Dana Reader <dana@example.org>
+To: hello@example.com
+Subject: Question about your API
+Date: Tue, 01 Dec 2026 15:04:05 +0000
+Message-ID: <q1.abc@example.org>
+Authentication-Results: mx.example.net; spf=pass smtp.mailfrom=example.org; dkim=pass header.d=example.org; dmarc=pass header.from=example.org
+Content-Type: text/plain; charset=utf-8
+
+Hi, does your API support batch requests? The docs at https://docs.example.org/batch
+were not clear to me. Thanks, Dana

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-mail-gate"
+version = "0.1.0"
+description = "A quarantining mail gateway for AI agents: deterministic inbound screening, owner-approved replies, and a zero-LLM sequence sender with stops and halts."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=42"]
+
+[project.scripts]
+amg = "agentmailgate.cli:main"
+
+[tool.setuptools]
+packages = ["agentmailgate"]

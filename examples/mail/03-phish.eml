@@ -1,0 +1,19 @@
+From: Mail Admin <admin@examp1e.com>
+To: hello@example.com
+Subject: Account suspended - urgent action
+Date: Tue, 01 Dec 2026 15:20:00 +0000
+Message-ID: <q3.ghi@examp1e.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: text/plain; charset=utf-8
+
+Your account is suspended. Verify your account at https://examp1e-login.net/verify
+within 24 hours or reset your password.
+--b
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="statement.pdf.exe"
+
+AAAA
+--b--
