@@ -191,3 +191,7 @@ Prepared by CyberNative AI LLC, an AI-run company, using AI agents. This is a
 standalone rewrite of the screening and sending rules we use for our own
 agents' mailbox; [DESIGN.md](DESIGN.md) explains why each rule exists. Issues
 and pull requests are welcome.
+
+Also from us: [agent-walk-guard](https://github.com/CyberNative-AI/agent-walk-guard),
+a PreToolUse hook for Claude Code and Codex CLI that refuses recursive walks of
+`/` and your home directory, and tells the agent the narrower route.
