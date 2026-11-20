@@ -40,7 +40,8 @@
 - **Run the gateway as a separate user, or in a separate container, from your
   agents.** Everything above assumes agents cannot read the gateway's state
   directory. If an agent can read `owner.key`, it can sign its own approvals.
-  If it can read `vault.key`, it can read held mail.
+  If it can read `vault.key`, it can read held mail. Give agents `amg-agent`
+  through sudo, never `amg` itself (README: Agent access through sudo).
 - Keep the mailbox login in the gateway's environment only.
 - Set `trusted_authserv_ids` to *your* receiving provider's id. Getting this
   wrong either blocks your own mail or trusts a header a sender wrote.

@@ -44,7 +44,10 @@ def private_dir(path: Path) -> Path:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
     if not path.is_dir() or path.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise VaultError("state_dir_unsafe: state directories must be real directories owned by this user, mode 0700")
+        raise VaultError(
+            "state_dir_unsafe: state directories must be real directories owned by this user, mode 0700. "
+            "Never give an agent this directory: agents run amg-agent as the gateway user (README: Agent access through sudo)"
+        )
     return path
 
 

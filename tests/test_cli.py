@@ -77,6 +77,8 @@ class CliErrorTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertNoEcho(err)
         self.assertIn("state_dir_unsafe", err)
+        self.assertIn("Agent access through sudo", err)  # points an agent's operator away from chown
+        self.assertIn("amg-agent", err)
 
 
 if __name__ == "__main__":

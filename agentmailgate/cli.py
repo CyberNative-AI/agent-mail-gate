@@ -4,6 +4,7 @@ Agent-safe commands (read screened data, propose):
   amg screen FILE.eml            classify one message, print the agent view
   amg inbox                      pending screened messages (agent view)
   amg ack REF [REF ...]          mark messages handled
+  Agents run inbox and ack only through ``amg-agent`` as the gateway user.
 
 Gateway commands (run by the gateway user or its timer):
   amg scan                       read new mail (read-only POP), screen, store

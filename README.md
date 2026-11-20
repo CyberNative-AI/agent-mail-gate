@@ -41,6 +41,10 @@ pip install .
 C="--config examples/demo.toml"     # demo config: sends go to ./outbox, not the internet
 ```
 
+This demo runs every step as one user so you can see each one. It does not show
+the agent/owner separation: under one user an agent could read `owner.key`. The
+separation is set up in [Running it for real](#running-it-for-real).
+
 **Screen some mail.** Five sample messages: an ordinary question, a prompt
 injection, a phish with an `.exe`, a verified note from the owner, and a forged
 one.
@@ -103,7 +107,90 @@ ls outbox/                                                   # the .eml files th
    sequences, `amg sequence tick` every two minutes.
 5. Give agents a way to run `amg inbox`, `amg ack` and to write draft files, and
    nothing else. Approvals, `reply send` and `sequence` stay with the owner and
-   the timer.
+   the timer. `inbox` and `ack` open the vault, so as any other user they fail
+   with `Permission denied` or `state_dir_unsafe`. Do not fix that by handing
+   the agent the state directory: it could then read `owner.key` and approve
+   its own mail. Let it run `amg-agent`, which does only those two things, as
+   the gateway user through sudo, as below.
+
+**Agent access through sudo.** Here the gateway user is `amg`, the agent's user
+is `agent`, and the install and config are under `/home/amg` as in the units
+below. `amg-agent` is installed next to `amg`. It accepts only `inbox` and
+`ack REF [REF ...]` (each `REF` a 64-hex `messageRef`), always reads
+`~amg/.config/amg/gate.toml`, and refuses anything else before it opens a file.
+Grant that program, never `amg` itself: sudo matches a rule's arguments as one
+joined string, so a rule such as `amg ... ack *` lets the agent put owner
+commands in front of `ack`. Create `/etc/sudoers.d/amg-agent` with
+`sudo visudo -f /etc/sudoers.d/amg-agent`:
+
+```sudoers
+agent ALL=(amg) NOPASSWD: /home/amg/agent-mail-gate/.venv/bin/amg-agent
+```
+
+Keep sudo's default `env_reset` for this rule (no `SETENV`, nothing added to
+`env_keep`), and keep the install, its `.venv` and the config owned by `amg`
+and out of the agent's write reach.
+
+From your admin account, check what the agent may run:
+
+```sh
+sudo -l -U agent        # under "may run": exactly the one amg-agent line
+```
+
+If it lists anything more, such as `(ALL : ALL) ALL` from the `sudo` group, the
+agent can become `amg` and the separation is gone: remove that grant first.
+Then, from the agent's account:
+
+```sh
+G=/home/amg/agent-mail-gate/.venv/bin/amg-agent
+sudo -n -u amg $G inbox                        # the agent view
+sudo -n -u amg $G sequence status              # amg-agent: refused
+cat /home/amg/.config/amg/state/owner.key      # Permission denied
+```
+
+The owner approves a private copy of the draft that the agent can no longer
+change. Read the draft with the agent's rights, so a draft that links to a
+gateway file cannot pull it in. Open it once, without following a link or
+waiting on a pipe, and copy from that open file only if it is a plain file: at
+most 64 KiB (the largest reply `amg` sends), within 10 seconds, into a new file
+that only the gateway can read. Review that file with control characters
+printed as text, not acted on by your terminal. From your admin account, in
+bash (`REF` is the `messageRef` the draft answers):
+
+```sh
+sudo -v                       # enter your password once
+set -o pipefail               # a failure anywhere in the pipe fails the copy
+D=                            # the file you may approve: empty until the review has printed
+# R opens the draft once (no link, no wait), checks that open file is plain, reads 64 KiB + 1 byte at most
+R='import os,stat,sys
+try: f=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+except OSError as e: sys.exit(e.strerror)
+stat.S_ISREG(os.fstat(f).st_mode) or sys.exit("not a plain file")
+sys.stdout.buffer.write(os.fdopen(f,"rb").read(65537))'
+S=$(sudo -u amg mktemp /home/amg/draft.XXXXXXXX) &&
+  timeout -k 2 10 sudo -u agent python3 -I -c "$R" /home/agent/draft.txt |
+  sudo -u amg timeout 10 dd of="$S" bs=65537 count=1 iflag=fullblock status=none &&
+  N=$(sudo -u amg stat -c %s -- "$S") && [ "$N" -ge 1 ] && [ "$N" -le 65536 ] &&
+  sudo -u amg cat -v -- "$S" && # review: ^X and M-x mark control and non-ASCII bytes
+  D=$S
+[ -n "$D" ] || { echo "Not copied, nothing to approve: start again"; sudo -u amg rm -f -- "$S"; }
+```
+
+If that is what you want to send, approve that same file. The first line takes
+the file out of `D` before anything runs, so each copy gets one approval
+attempt, even if that attempt is interrupted. The last line removes the copy
+whether or not the approval succeeded:
+
+```sh
+A=$D; D=
+[ -n "$A" ] && sudo -u amg /home/amg/agent-mail-gate/.venv/bin/amg --config /home/amg/.config/amg/gate.toml reply approve REF --body-file "$A"
+sudo -u amg rm -f -- "$A"
+```
+
+`D` is emptied at the start of every copy and set only after every step above
+succeeded, so a draft that is missing, not a plain file, too large, too slow,
+or copied only in part cannot be approved, even if removing its copy fails. To
+try again, copy again.
 
 Example systemd user units:
 
